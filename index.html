@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hospital Appointment Booking</title>
+<style>
+:root{box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px);
+--bg:#f4f7fa;--card:#fff;--tx:#1b2430;--mut:#667386;--pri:#0b6bcb;--bd:#d8dfe8;--err:#b3261e;--ok:#17743a;--warn:#8a5a00}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0e141b;--card:#18212b;--tx:#e6ebf1;--mut:#93a0b0;--pri:#5aaeff;--bd:#2a3644;--err:#ff8f86;--ok:#6fdc8c;--warn:#f2c35b}}
+:root[data-theme="dark"]{--bg:#0e141b;--card:#18212b;--tx:#e6ebf1;--mut:#93a0b0;--pri:#5aaeff;--bd:#2a3644;--err:#ff8f86;--ok:#6fdc8c;--warn:#f2c35b}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+*,*:before,*:after{box-sizing:inherit}
+body{margin:0;background:var(--bg);color:var(--tx);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:14px 16px 4px;max-width:760px;margin:0 auto}
+h1{font-size:1.2rem;margin:0}
+.sub{color:var(--mut);font-size:.85rem}
+nav{display:flex;gap:6px;overflow-x:auto;padding:8px 16px;max-width:760px;margin:0 auto}
+nav button{flex:0 0 auto;border:1px solid var(--bd);background:var(--card);color:var(--tx);padding:8px 14px;border-radius:999px;font:inherit;cursor:pointer}
+nav button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+main{max-width:760px;margin:0 auto;padding:4px 16px 40px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:14px;margin:10px 0}
+label{display:block;font-size:.85rem;color:var(--mut);margin:8px 0 3px}
+input,select{width:100%;padding:10px;border:1px solid var(--bd);border-radius:8px;background:var(--bg);color:var(--tx);font:inherit}
+button.b{margin-top:10px;padding:10px 16px;border:0;border-radius:8px;background:var(--pri);color:#fff;font:inherit;cursor:pointer}
+button.b.alt{background:transparent;color:var(--pri);border:1px solid var(--pri)}
+button.b.danger{background:transparent;color:var(--err);border:1px solid var(--err)}
+.row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1 1 140px}
+.item{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.item small{color:var(--mut);display:block}
+.tag{font-size:.75rem;padding:2px 8px;border-radius:999px;border:1px solid var(--bd)}
+.BOOKED{color:var(--ok)}.CANCELLED{color:var(--mut)}
+#toast{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;max-width:760px;margin:6px auto 0;padding:0 16px}
+#toast div{padding:10px 12px;border-radius:8px;border:1px solid;background:var(--card)}
+.t-err{color:var(--err)}.t-ok{color:var(--ok)}.t-warn{color:var(--warn)}
+.mut{color:var(--mut)}
+</style>
+</head>
+<body>
+<header><h1>Hospital Appointment Booking</h1>
+<div class="sub" id="who">Active patient: none</div></header>
+<div id="toast" aria-live="polite"></div>
+<nav id="nav"></nav>
+<main id="main"></main>
+<script>
+"use strict";
+// ---------- Reference data (mirrors sql/03_seed.sql) ----------
+const SPECS=["Cardiology","Dermatology","Pediatrics","Orthopedics","General Practice"];
+const DOCS=[[1,"Alice Morgan",0],[2,"Ben Okafor",1],[3,"Chloe Tanaka",2],[4,"David Silva",3],[5,"Elena Petrova",4],[6,"Farid Haddad",0]];
+const AFTERNOON=[1,4,5]; // doctors with Mon/Wed/Fri 14:00-17:00 (20 min)
+// ---------- State (localStorage, always guarded) ----------
+let S={patients:[],appts:[],np:1,na:1,cur:null};
+try{const r=localStorage.getItem("hosp-v1");if(r)S=JSON.parse(r)}catch(e){}
+const save=()=>{try{localStorage.setItem("hosp-v1",JSON.stringify(S))}catch(e){}};
+// ---------- Helpers ----------
+const $=s=>document.querySelector(s);
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const pad=n=>String(n).padStart(2,"0");
+const today=()=>{const d=new Date();return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`};
+const parse=s=>{const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(s||"");if(!m)return null;const d=new Date(+m[1],+m[2]-1,+m[3]);return d.getMonth()===+m[2]-1?d:null};
+const dow=d=>d.getDay()||7; // ISO Mon=1
+const toMin=t=>+t.slice(0,2)*60+ +t.slice(3);
+const fmt=m=>`${pad(Math.floor(m/60))}:${pad(m%60)}`;
+const doc=id=>DOCS.find(d=>d[0]===id);
+const pat=id=>S.patients.find(p=>p.id===id);
+function toast(text,kind){const t=$("#toast");t.innerHTML=`<div class="t-${kind}" style="border-color:currentColor">${esc(text)}</div>`;clearTimeout(toast.h);toast.h=setTimeout(()=>t.innerHTML="",7000)}
+class OraError extends Error{constructor(c,m){super(m);this.code=c}}
+// ---------- "Database" layer: same rules as the Oracle procedures ----------
+function windows(did,d){const w=[],x=dow(d);if(x<=5)w.push([540,780,30]);if(AFTERNOON.includes(did)&&[1,3,5].includes(x))w.push([840,1020,20]);return w}
+function allSlots(did,d){const o=[];for(const[s,e,k]of windows(did,d))for(let m=s;m+k<=e;m+=k)o.push(fmt(m));return o}
+const isPast=(d,slot)=>new Date(d.getFullYear(),d.getMonth(),d.getDate(),+slot.slice(0,2),+slot.slice(3))<new Date();
+const taken=(key,id,date,slot)=>S.appts.some(a=>a[key]===id&&a.date===date&&a.slot===slot&&a.status==="BOOKED");
+function freeSlots(did,date){const d=parse(date);return allSlots(did,d).filter(s=>!taken("doctor",did,date,s)&&!isPast(d,s))}
+function bookAppointment(pid,did,date,slot){ // BookAppointment + trg_appt_validate
+  if(!doc(did))throw new OraError(20002,"Doctor does not exist or is inactive.");
+  if(!pat(pid))throw new OraError(20001,"Patient does not exist.");
+  const d=parse(date);
+  if(taken("doctor",did,date,slot))throw new OraError(20004,"This time slot has just been taken. Please choose another slot.");
+  if(taken("patient",pid,date,slot))throw new OraError(20005,"The patient already has another appointment at this date and time.");
+  if(isPast(d,slot))throw new OraError(20006,"Appointments cannot be booked in the past.");
+  if(!allSlots(did,d).includes(slot))throw new OraError(20003,"The doctor does not work at the selected date/time.");
+  const a={id:S.na++,patient:pid,doctor:did,date,slot,status:"BOOKED"};S.appts.push(a);save();return a.id}
+// ---------- Validation (same rules as the Java Validation class) ----------
+function vName(l,v){v=(v||"").trim();if(!/^\p{L}[\p{L} .'-]{0,49}$/u.test(v))throw new Error(l+" is required (letters, spaces, . ' - ; max 50).");return v}
+function vPhone(v){v=(v||"").trim().replace(/[ ()-]/g,"");if(!/^\+?[0-9]{7,15}$/.test(v))throw new Error("Phone must contain 7-15 digits (optional leading +).");return v}
+function vEmail(v){v=(v||"").trim();if(!v)return"";if(!/^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$/.test(v))throw new Error("Email address is not valid.");return v}
+function vDob(v){const d=parse(v);if(!d||v>today()||v<"1900-01-01")throw new Error("Date of birth must be a valid date between 1900-01-01 and today.");return v}
+function vFuture(l,v){if(!parse(v))throw new Error(l+" must be a valid date.");if(v<today())throw new Error(l+" cannot be in the past.");return v}
+// ---------- Views ----------
+const TABS=["Patient","Find Doctor","Book","History"];let tab=0,target={doc:"",date:""};
+function nav(){$("#nav").innerHTML=TABS.map((t,i)=>`<button data-tab="${i}" class="${i===tab?"on":""}">${i+1}. ${t}</button>`).join("");
+  const p=pat(S.cur);$("#who").textContent="Active patient: "+(p?`${p.first} ${p.last} (${p.phone})`:"none")}
+const docOpts=sel=>DOCS.map(d=>`<option value="${d[0]}" ${+sel===d[0]?"selected":""}>Dr. ${d[1]} - ${SPECS[d[2]]}</option>`).join("");
+function render(){nav();const m=$("#main");
+  if(tab===0)m.innerHTML=`<div class="card"><b>Register new patient</b>
+   <div class="row"><div><label>First name *</label><input id="fn"></div><div><label>Last name *</label><input id="ln"></div></div>
+   <div class="row"><div><label>Date of birth *</label><input id="dob" type="date" max="${today()}"></div><div><label>Phone *</label><input id="ph" inputmode="tel"></div></div>
+   <label>Email</label><input id="em" type="email"><button class="b" data-act="reg">Register</button></div>
+   <div class="card"><b>Find existing patient</b><label>Name or phone</label><input id="q" placeholder="Type to search"><div id="res"></div></div>`,searchP();
+  if(tab===1)m.innerHTML=`<div class="card"><b>Doctor availability</b>
+   <label>Specialization</label><select id="sp"><option value="">All specializations</option>${SPECS.map((s,i)=>`<option value="${i}">${s}</option>`).join("")}</select>
+   <label>Date (optional)</label><input id="sd" type="date" min="${today()}"><button class="b" data-act="find">Search</button></div><div id="docs"></div>`;
+  if(tab===2)m.innerHTML=`<div class="card"><b>New appointment</b>
+   <p class="mut">Patient: ${pat(S.cur)?esc(pat(S.cur).first+" "+pat(S.cur).last):"none - select one on the Patient tab"}</p>
+   <label>Doctor *</label><select id="bd">${docOpts(target.doc)}</select>
+   <label>Date *</label><input id="bt" type="date" min="${today()}" value="${esc(target.date)}">
+   <button class="b alt" data-act="slots">Show free slots</button>
+   <label>Free slot *</label><select id="bs"><option value="">- load slots first -</option></select>
+   <div class="row"><button class="b" data-act="book">Book appointment</button><button class="b alt" data-act="sim">Simulate another user booking this slot</button></div>
+   <p class="mut" style="font-size:.8rem">Demo: the simulate button books the selected slot as another patient without refreshing your list, so your next Book click is rejected like Oracle's ORA-20004.</p></div>`;
+  if(tab===3)history()}
+function searchP(){const q=($("#q")?.value||"").trim().toLowerCase().replace(/[ ()-]/g,"");const r=$("#res");if(!r)return;
+  const list=S.patients.filter(p=>!q||(p.first+p.last+p.phone).toLowerCase().replace(/ /g,"").includes(q));
+  r.innerHTML=list.length?list.map(p=>`<div class="item card"><div>${esc(p.first)} ${esc(p.last)}<small>${esc(p.phone)} - DOB ${esc(p.dob)}</small></div><button class="b" data-act="use" data-id="${p.id}">Use</button></div>`).join(""):`<p class="mut">No patients yet. Register one above.</p>`}
+function history(){const p=pat(S.cur),m=$("#main");
+  if(!p){m.innerHTML=`<p class="card mut">No patient selected - choose one on the Patient tab.</p>`;return}
+  const l=S.appts.filter(a=>a.patient===p.id).sort((a,b)=>(b.date+b.slot).localeCompare(a.date+a.slot));
+  m.innerHTML=`<p><b>Appointment history: ${esc(p.first)} ${esc(p.last)}</b></p>`+(l.length?l.map(a=>{const d=doc(a.doctor);
+   return `<div class="card item"><div>${esc(a.date)} at ${esc(a.slot)} <span class="tag ${a.status}">${a.status}</span><small>Dr. ${esc(d[1])} - ${SPECS[d[2]]} - #${a.id}</small></div>${a.status==="BOOKED"?`<button class="b danger" data-act="cancel" data-id="${a.id}">Cancel</button>`:""}</div>`}).join(""):`<p class="card mut">No appointments yet.</p>`)}
+// ---------- Actions ----------
+function loadSlots(keep){const did=+$("#bd").value,date=$("#bt").value;
+  try{vFuture("Date",date)}catch(e){toast(e.message,"warn");return}
+  const f=freeSlots(did,date);$("#bs").innerHTML=f.length?f.map(s=>`<option>${s}</option>`).join(""):`<option value="">no free slots</option>`;
+  if(!keep)toast(f.length?f.length+" free slot(s).":"No free slots on "+date+".",f.length?"ok":"warn")}
+const actions={
+  reg(){try{const p={id:S.np,first:vName("First name",$("#fn").value),last:vName("Last name",$("#ln").value),dob:vDob($("#dob").value),phone:vPhone($("#ph").value),email:vEmail($("#em").value)};
+    if(S.patients.some(x=>x.phone===p.phone))throw new OraError(1,"A patient with this phone number already exists.");
+    S.np++;S.patients.push(p);S.cur=p.id;save();toast(`Patient registered (ID ${p.id}) and selected.`,"ok");render()}catch(e){toast(e.message,e instanceof OraError?"err":"warn")}},
+  use(b){S.cur=+b.dataset.id;save();toast("Patient selected.","ok");render()},
+  find(){const sp=$("#sp").value,ds=$("#sd").value;let d=null;
+    if(ds){try{vFuture("Date",ds)}catch(e){toast(e.message,"warn");return}d=parse(ds)}
+    const l=DOCS.filter(x=>(sp===""||x[2]===+sp)&&(!d||windows(x[0],d).length));
+    $("#docs").innerHTML=l.length?l.map(x=>`<div class="card item"><div>Dr. ${esc(x[1])}<small>${SPECS[x[2]]}${d?" - "+windows(x[0],d).map(([s,e])=>fmt(s)+"-"+fmt(e)).join(", "):""}</small></div><button class="b" data-act="goto" data-id="${x[0]}" data-date="${esc(ds)}">Book</button></div>`).join(""):`<p class="card mut">No doctors match the filters.</p>`},
+  goto(b){target={doc:b.dataset.id,date:b.dataset.date};tab=2;render();if(target.date)loadSlots(true)},
+  slots(){loadSlots(false)},
+  book(){const did=+$("#bd").value,date=$("#bt").value,slot=$("#bs").value;
+    try{if(!pat(S.cur))throw new Error("Select or register a patient first.");vFuture("Date",date);if(!slot)throw new Error("Load the free slots and choose one.")}catch(e){toast(e.message,"warn");return}
+    if(!confirm(`Book Dr. ${doc(did)[1]} on ${date} at ${slot}?`))return;
+    try{const id=bookAppointment(S.cur,did,date,slot);toast(`Appointment #${id} confirmed for ${date} at ${slot}.`,"ok")}
+    catch(e){if(!(e instanceof OraError))throw e;toast(`ORA-${e.code}: ${e.message}`,"err")}
+    loadSlots(true)},
+  sim(){const slot=$("#bs").value,did=+$("#bd").value,date=$("#bt").value;if(!slot){toast("Load and select a slot first.","warn");return}
+    let o=S.patients.find(p=>p.phone==="+15559990000");
+    if(!o){o={id:S.np++,first:"Demo",last:"User",dob:"1985-01-01",phone:"+15559990000",email:""};S.patients.push(o)}
+    try{bookAppointment(o.id,did,date,slot);toast("Another user just booked "+slot+". Now click Book to see the conflict.","warn")}catch(e){toast(e.message,"err")}},
+  cancel(b){if(!confirm("Cancel this appointment?"))return;const a=S.appts.find(x=>x.id===+b.dataset.id&&x.patient===S.cur&&x.status==="BOOKED");
+    if(!a){toast("ORA-20007: Appointment not found or cannot be cancelled.","err");return}a.status="CANCELLED";save();toast("Appointment cancelled.","ok");render()}
+};
+document.addEventListener("click",e=>{const t=e.target.closest("[data-tab]");if(t){tab=+t.dataset.tab;render();return}
+  const a=e.target.closest("[data-act]");if(a)actions[a.dataset.act](a)});
+document.addEventListener("input",e=>{if(e.target.id==="q")searchP();if(e.target.id==="bd"||e.target.id==="bt")$("#bs").innerHTML=`<option value="">- load slots first -</option>`});
+render();
+</script>
+</body>
+</html>
